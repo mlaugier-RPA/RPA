@@ -1,9 +1,9 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Maxime LAUGIER
-# APIOrchestrator v3.7
-# Export XLSX + Summary + ROI relatif + GainNet + 30 jours + résumé Datas + colonne G supprimée
-# Gestion des valeurs vides pour TotalJobs, Successful, Faulted
+# APIOrchestrator v3.8
+# Export XLSX + Summary + ROI relatif + GainNet + 30 jours + Datas propre
+# Gestion des folders et jobs manquants (Flexible Folder matching, états étendus)
 #>
 
 # --- Variables générales ---
@@ -50,7 +50,7 @@ function Get-UipathJobsForFolder {
     $FolderHeaders.Add("X-UIPATH-OrganizationUnitId", $FolderId)
 
     $Jobs = @()
-    $NextUrl = "$BaseUrl/Jobs?`$filter=(EndTime ge $FilterDate) and (State eq 'Successful' or State eq 'Faulted')&`$orderby=EndTime desc&`$top=100"
+    $NextUrl = "$BaseUrl/Jobs?`$filter=(EndTime ge $FilterDate) and (State eq 'Successful' or State eq 'Faulted' or State eq 'Stopped')&`$orderby=EndTime desc&`$top=100"
 
     while ($NextUrl) {
         try {
@@ -129,7 +129,7 @@ $ws.Cells.Item(2,10) = $FaultedCount
 try { $wsSummary = $wb.Worksheets.Item("Summary") } catch { $wsSummary = $wb.Worksheets.Add(); $wsSummary.Name = "Summary" }
 $wsSummary.Cells.Clear()
 
-$headersSummary = 'FolderName','TotalJobs','Successful','Faulted','SuccessRate','TotalHoursSaved','ROI','GainNet'
+$headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','SuccessRate','TotalHoursSaved','ROI','GainNet'
 for ($i=0; $i -lt $headersSummary.Count; $i++) {
     $wsSummary.Cells.Item(1, $i+1) = $headersSummary[$i]
 }
@@ -137,28 +137,27 @@ for ($i=0; $i -lt $headersSummary.Count; $i++) {
 $FoldersSummary = @()
 
 foreach ($folder in $Folders) {
-    $JobsInFolder = $AllJobs | Where-Object {
-        ($_.FolderName -replace '\s','') -ieq ($folder.DisplayName -replace '\s','')
-    }
+    # Folder matching flexible
+    $JobsInFolder = $AllJobs | Where-Object { $_.FolderName -like "*$($folder.DisplayName.Trim())*" }
 
-    if ($JobsInFolder.Count -eq 0) { continue }   # ignore folders sans jobs
+    if ($JobsInFolder.Count -eq 0) { continue }
 
-    # --- Comptage robuste même si certaines valeurs sont vides ---
+    # Comptage robuste même si certaines valeurs sont vides
     $Success = ($JobsInFolder | Where-Object {$_.State -eq 'Successful'}).Count
     $Faulted = ($JobsInFolder | Where-Object {$_.State -eq 'Faulted'}).Count
+    $Stopped = ($JobsInFolder | Where-Object {$_.State -eq 'Stopped'}).Count
 
     if (-not $Success) { $Success = 0 }
     if (-not $Faulted) { $Faulted = 0 }
+    if (-not $Stopped) { $Stopped = 0 }
 
-    $Total = $Success + $Faulted
+    $Total = $Success + $Faulted + $Stopped
 
     $Taux = if ($Total -gt 0) { [math]::Round(($Success / $Total), 2) } else { $null }
 
     $TotalMinutesSaved = $Success * $MinutesSavedPerJob
     $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
     $TotalValue = $TotalHoursSaved * $CostPerHour
-
-    # ROI relatif (1 = seuil rentabilité)
     $ROI = if ($MonthlyRPACost -gt 0) { [math]::Round(($TotalValue / $MonthlyRPACost), 2) } else { $null }
     $GainNet = [math]::Round(($TotalValue - $MonthlyRPACost),2)
 
@@ -167,6 +166,7 @@ foreach ($folder in $Folders) {
         TotalJobs       = $Total
         Successful      = $Success
         Faulted         = $Faulted
+        Stopped         = $Stopped
         SuccessRate     = $Taux
         TotalHoursSaved = $TotalHoursSaved
         ROI             = $ROI
@@ -179,6 +179,7 @@ if ($FoldersSummary.Count -gt 0) {
     $TotalJobsTermines = ($AllJobs | Measure-Object).Count
     $SuccessfulJobs = $AllJobs | Where-Object {$_.State -eq 'Successful'}
     $FaultedJobs = $AllJobs | Where-Object {$_.State -eq 'Faulted'}
+    $StoppedJobs = $AllJobs | Where-Object {$_.State -eq 'Stopped'}
 
     $TotalMinutesSaved = $SuccessfulJobs.Count * $MinutesSavedPerJob
     $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
@@ -191,6 +192,7 @@ if ($FoldersSummary.Count -gt 0) {
         TotalJobs       = $TotalJobsTermines
         Successful      = $SuccessfulJobs.Count
         Faulted         = $FaultedJobs.Count
+        Stopped         = $StoppedJobs.Count
         SuccessRate     = if ($TotalJobsTermines -gt 0) { [math]::Round(($SuccessfulJobs.Count / $TotalJobsTermines),2) } else { $null }
         TotalHoursSaved = $TotalHoursSaved
         ROI             = $ROIglobal
@@ -205,14 +207,15 @@ foreach ($item in $FoldersSummary) {
     $wsSummary.Cells.Item($row,2) = $item.TotalJobs
     $wsSummary.Cells.Item($row,3) = $item.Successful
     $wsSummary.Cells.Item($row,4) = $item.Faulted
-    $wsSummary.Cells.Item($row,5).NumberFormat = "0.00"
-    $wsSummary.Cells.Item($row,5).Value2 = [double]$item.SuccessRate
+    $wsSummary.Cells.Item($row,5) = $item.Stopped
     $wsSummary.Cells.Item($row,6).NumberFormat = "0.00"
-    $wsSummary.Cells.Item($row,6).Value2 = [double]$item.TotalHoursSaved
+    $wsSummary.Cells.Item($row,6).Value2 = [double]$item.SuccessRate
     $wsSummary.Cells.Item($row,7).NumberFormat = "0.00"
-    $wsSummary.Cells.Item($row,7).Value2 = [double]$item.ROI
+    $wsSummary.Cells.Item($row,7).Value2 = [double]$item.TotalHoursSaved
     $wsSummary.Cells.Item($row,8).NumberFormat = "0.00"
-    $wsSummary.Cells.Item($row,8).Value2 = [double]$item.GainNet
+    $wsSummary.Cells.Item($row,8).Value2 = [double]$item.ROI
+    $wsSummary.Cells.Item($row,9).NumberFormat = "0.00"
+    $wsSummary.Cells.Item($row,9).Value2 = [double]$item.GainNet
     $row++
 }
 
@@ -228,4 +231,4 @@ $excel.Quit()
 
 Write-Host "✅ Export terminé :"
 Write-Host " - Feuille 'Datas' : toutes les exécutions des 30 derniers jours + résumé succès/échecs, colonne G supprimée"
-Write-Host " - Feuille 'Summary' : synthèse nettoyée, uniquement folders avec jobs + taux de succès + ROI + GainNet"
+Write-Host " - Feuille 'Summary' : synthèse nettoyée, folders complets + SuccessRate + ROI + GainNet"
