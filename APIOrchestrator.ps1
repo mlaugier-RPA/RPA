@@ -1,8 +1,8 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Maxime LAUGIER
-# APIOrchestrator v3.4
-# Export XLSX + Summary + ROI relatif + 30 jours
+# APIOrchestrator v3.5
+# Export XLSX + Summary + ROI relatif + GainNet + 30 jours + résumé Datas
 #>
 
 # --- Variables générales ---
@@ -13,7 +13,7 @@ $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # --- Paramètres ROI ---
 $CostPerHour = 30         # € / heure d’un humain
-$MinutesSavedPerJob = 20  # Temps gagné par job réussi (en minutes)
+$MinutesSavedPerJob = 15  # Temps gagné par job réussi (en minutes)
 $MonthlyRPACost = 5900    # Coût global RPA mensuel (€)
 
 # --- Authentification ---
@@ -108,11 +108,24 @@ foreach ($job in $AllJobs) {
     $row++
 }
 
+# --- Résumé global succès / échecs dans Datas ---
+$SuccessCount = ($AllJobs | Where-Object {$_.State -eq 'Successful'}).Count
+$FaultedCount = ($AllJobs | Where-Object {$_.State -eq 'Faulted'}).Count
+$TotalCount = $SuccessCount + $FaultedCount
+
+$ws.Cells.Item(1,8) = "TotalJobs"
+$ws.Cells.Item(1,9) = "Successful"
+$ws.Cells.Item(1,10) = "Faulted"
+
+$ws.Cells.Item(2,8) = $TotalCount
+$ws.Cells.Item(2,9) = $SuccessCount
+$ws.Cells.Item(2,10) = $FaultedCount
+
 # --- Feuille "Summary" ---
 try { $wsSummary = $wb.Worksheets.Item("Summary") } catch { $wsSummary = $wb.Worksheets.Add(); $wsSummary.Name = "Summary" }
 $wsSummary.Cells.Clear()
 
-$headersSummary = 'FolderName','TotalJobs','Successful','Faulted','SuccessRate','TotalHoursSaved','ROI'
+$headersSummary = 'FolderName','TotalJobs','Successful','Faulted','SuccessRate','TotalHoursSaved','ROI','GainNet'
 for ($i=0; $i -lt $headersSummary.Count; $i++) {
     $wsSummary.Cells.Item(1, $i+1) = $headersSummary[$i]
 }
@@ -137,6 +150,7 @@ foreach ($folder in $Folders) {
 
     # ROI relatif (1 = seuil rentabilité)
     $ROI = if ($MonthlyRPACost -gt 0) { [math]::Round(($TotalValue / $MonthlyRPACost), 2) } else { $null }
+    $GainNet = [math]::Round(($TotalValue - $MonthlyRPACost),2)
 
     $FoldersSummary += [PSCustomObject]@{
         FolderName      = $folder.DisplayName
@@ -146,6 +160,7 @@ foreach ($folder in $Folders) {
         SuccessRate     = $Taux
         TotalHoursSaved = $TotalHoursSaved
         ROI             = $ROI
+        GainNet         = $GainNet
     }
 }
 
@@ -159,6 +174,7 @@ if ($FoldersSummary.Count -gt 0) {
     $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
     $TotalValue = $TotalHoursSaved * $CostPerHour
     $ROIglobal = if ($MonthlyRPACost -gt 0) { [math]::Round(($TotalValue / $MonthlyRPACost), 2) } else { $null }
+    $GainNetGlobal = [math]::Round(($TotalValue - $MonthlyRPACost),2)
 
     $FoldersSummary += [PSCustomObject]@{
         FolderName      = 'TOTAL'
@@ -168,6 +184,7 @@ if ($FoldersSummary.Count -gt 0) {
         SuccessRate     = if ($TotalJobsTermines -gt 0) { [math]::Round(($SuccessfulJobs.Count / $TotalJobsTermines),2) } else { $null }
         TotalHoursSaved = $TotalHoursSaved
         ROI             = $ROIglobal
+        GainNet         = $GainNetGlobal
     }
 }
 
@@ -184,6 +201,8 @@ foreach ($item in $FoldersSummary) {
     $wsSummary.Cells.Item($row,6).Value2 = [double]$item.TotalHoursSaved
     $wsSummary.Cells.Item($row,7).NumberFormat = "0.00"
     $wsSummary.Cells.Item($row,7).Value2 = [double]$item.ROI
+    $wsSummary.Cells.Item($row,8).NumberFormat = "0.00"
+    $wsSummary.Cells.Item($row,8).Value2 = [double]$item.GainNet
     $row++
 }
 
@@ -198,5 +217,5 @@ $excel.Quit()
 [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
 
 Write-Host "✅ Export terminé :"
-Write-Host " - Feuille 'Datas' : toutes les exécutions des 30 derniers jours"
-Write-Host " - Feuille 'Summary' : synthèse + taux de succès + ROI relatif + heures gagnées"
+Write-Host " - Feuille 'Datas' : toutes les exécutions des 30 derniers jours + résumé succès/échecs"
+Write-Host " - Feuille 'Summary' : synthèse + taux de succès + ROI relatif + GainNet + heures gagnées"
