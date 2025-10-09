@@ -13,7 +13,7 @@ $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # --- Paramètres ROI ---
 $CostPerHour = 30         # € / heure d’un humain
-$MinutesSavedPerJob = 15  # Temps gagné par job réussi (en minutes)
+$MinutesSavedPerJob = 20  # Temps gagné par job réussi (en minutes)
 $MonthlyRPACost = 5900    # Coût global RPA mensuel (€)
 
 # --- Authentification ---
