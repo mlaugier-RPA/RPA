@@ -1,15 +1,20 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Maxime LAUGIER
-# APIOrchestrator v3.1
-# Export XLSX + Summary avec taux de succès (fraction)
+# APIOrchestrator v3.3
+# Export XLSX + Summary + ROI + Temps gagné
 #>
 
-# --- Variables ---
+# --- Variables générales ---
 $Org = "extiavqvkelj"
 $Tenant = "DefaultTenant"
 $XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"   # Chemin export XLSX
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
+
+# --- Paramètres ROI ---
+$CostPerHour = 20         # € / heure d’un humain
+$MinutesSavedPerJob = 10   # Temps gagné par job réussi (en minutes)
+$MonthlyRPACost = 5900    # Coût global RPA mensuel (€)
 
 # --- Authentification ---
 $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
@@ -27,13 +32,13 @@ $Headers = @{
 
 # --- Récupération des folders ---
 $FoldersResponse = Invoke-RestMethod -Uri "$BaseUrl/Folders" -Headers $Headers -Method Get
-$Folders = $FoldersResponse.value | Sort-Object DisplayName -Unique  # Évite les doublons
+$Folders = $FoldersResponse.value | Sort-Object DisplayName -Unique  # Pas de doublons
 
 # --- Filtrage sur 7 derniers jours ---
 $NowUtc = (Get-Date).ToUniversalTime()
 $FilterDate = $NowUtc.AddDays(-7).ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-# --- Fonction pour récupérer les jobs ---
+# --- Fonction : récupération des jobs par folder ---
 function Get-UipathJobsForFolder {
     param (
         [Parameter(Mandatory=$true)] [string]$FolderId,
@@ -52,7 +57,7 @@ function Get-UipathJobsForFolder {
             $Jobs += $Response.value
             $NextUrl = $Response.'@odata.nextLink'
         } catch {
-            Write-Host "Erreur de récupération pour $FolderName" -ForegroundColor Red
+            Write-Host "⚠ Erreur de récupération pour le folder $FolderName" -ForegroundColor Red
             break
         }
     }
@@ -64,14 +69,14 @@ function Get-UipathJobsForFolder {
     return $Jobs
 }
 
-# --- Récupération de tous les jobs ---
+# --- Récupération globale des jobs ---
 $AllJobs = @()
 foreach ($folder in $Folders) {
-    Write-Host "Récupération des jobs pour le folder : $($folder.DisplayName)"
+    Write-Host "📥 Récupération des jobs pour : $($folder.DisplayName)"
     $AllJobs += Get-UipathJobsForFolder -FolderId $folder.Id -FolderName $folder.DisplayName
 }
 
-# --- Export Excel ---
+# --- Préparation Excel ---
 $excel = New-Object -ComObject Excel.Application
 $excel.Visible = $false
 $excel.DisplayAlerts = $false
@@ -107,7 +112,7 @@ foreach ($job in $AllJobs) {
 try { $wsSummary = $wb.Worksheets.Item("Summary") } catch { $wsSummary = $wb.Worksheets.Add(); $wsSummary.Name = "Summary" }
 $wsSummary.Cells.Clear()
 
-$headersSummary = 'FolderName','TotalJobs','Successful','Faulted','SuccessRate'
+$headersSummary = 'FolderName','TotalJobs','Successful','Faulted','SuccessRate','TotalHoursSaved','ROI'
 for ($i=0; $i -lt $headersSummary.Count; $i++) {
     $wsSummary.Cells.Item(1, $i+1) = $headersSummary[$i]
 }
@@ -115,57 +120,76 @@ for ($i=0; $i -lt $headersSummary.Count; $i++) {
 $FoldersSummary = @()
 
 foreach ($folder in $Folders) {
-    $JobsInFolder = $AllJobs | Where-Object { $_.FolderName -eq $folder.DisplayName }
-    $Total = $JobsInFolder.Count
+    $JobsInFolder = $AllJobs | Where-Object {
+        ($_.FolderName -replace '\s','') -ieq ($folder.DisplayName -replace '\s','')
+    }
 
-    # Ignore si aucun job
-    if ($Total -eq 0) { continue }
+    $Total = $JobsInFolder.Count
+    if ($Total -eq 0) {
+        Write-Host "⚠ Aucun job trouvé pour le folder : $($folder.DisplayName)" -ForegroundColor Yellow
+        continue
+    }
 
     $Success = ($JobsInFolder | Where-Object {$_.State -eq 'Successful'}).Count
     $Faulted = ($JobsInFolder | Where-Object {$_.State -eq 'Faulted'}).Count
+    $Taux = if ($Total -gt 0) { [math]::Round(($Success / $Total), 2) } else { $null }
 
-    if ($Total -gt 0) {
-        $Taux = [math]::Round(($Success / $Total), 2)
-    } else {
-        $Taux = $null
-    }
+    # Calcul ROI spécifique au folder
+    $TotalMinutesSaved = $Success * $MinutesSavedPerJob
+    $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
+    $TotalValue = $TotalHoursSaved * $CostPerHour
+    $ROI = if ($MonthlyRPACost -gt 0) { [math]::Round((($TotalValue - $MonthlyRPACost) / $MonthlyRPACost), 2) } else { $null }
 
     $FoldersSummary += [PSCustomObject]@{
-        FolderName  = $folder.DisplayName
-        TotalJobs   = $Total
-        Successful  = $Success
-        Faulted     = $Faulted
-        SuccessRate = $Taux
+        FolderName      = $folder.DisplayName
+        TotalJobs       = $Total
+        Successful      = $Success
+        Faulted         = $Faulted
+        SuccessRate     = $Taux
+        TotalHoursSaved = $TotalHoursSaved
+        ROI             = $ROI
     }
 }
 
-# Ajout des totaux si au moins un folder a des jobs
+# --- Totaux globaux ---
 if ($FoldersSummary.Count -gt 0) {
     $TotalJobsTermines = ($AllJobs | Measure-Object).Count
     $SuccessfulJobs = $AllJobs | Where-Object {$_.State -eq 'Successful'}
     $FaultedJobs = $AllJobs | Where-Object {$_.State -eq 'Faulted'}
 
+    $TotalMinutesSaved = $SuccessfulJobs.Count * $MinutesSavedPerJob
+    $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
+    $TotalValue = $TotalHoursSaved * $CostPerHour
+    $ROIglobal = if ($MonthlyRPACost -gt 0) { [math]::Round((($TotalValue - $MonthlyRPACost) / $MonthlyRPACost), 2) } else { $null }
+
     $FoldersSummary += [PSCustomObject]@{
-        FolderName  = 'TOTAL'
-        TotalJobs   = $TotalJobsTermines
-        Successful  = $SuccessfulJobs.Count
-        Faulted     = $FaultedJobs.Count
-        SuccessRate = if ($TotalJobsTermines -gt 0) { [math]::Round(($SuccessfulJobs.Count / $TotalJobsTermines),2) } else { $null }
+        FolderName      = 'TOTAL'
+        TotalJobs       = $TotalJobsTermines
+        Successful      = $SuccessfulJobs.Count
+        Faulted         = $FaultedJobs.Count
+        SuccessRate     = if ($TotalJobsTermines -gt 0) { [math]::Round(($SuccessfulJobs.Count / $TotalJobsTermines),2) } else { $null }
+        TotalHoursSaved = $TotalHoursSaved
+        ROI             = $ROIglobal
     }
 }
 
-# Écriture dans Excel
+# --- Écriture dans Excel ---
 $row = 2
 foreach ($item in $FoldersSummary) {
     $wsSummary.Cells.Item($row,1) = $item.FolderName
     $wsSummary.Cells.Item($row,2) = $item.TotalJobs
     $wsSummary.Cells.Item($row,3) = $item.Successful
     $wsSummary.Cells.Item($row,4) = $item.Faulted
-    $wsSummary.Cells.Item($row,5) = $item.SuccessRate
+    $wsSummary.Cells.Item($row,5).NumberFormat = "0.00"
+    $wsSummary.Cells.Item($row,5).Value2 = [double]$item.SuccessRate
+    $wsSummary.Cells.Item($row,6).NumberFormat = "0.00"
+    $wsSummary.Cells.Item($row,6).Value2 = [double]$item.TotalHoursSaved
+    $wsSummary.Cells.Item($row,7).NumberFormat = "0.00"
+    $wsSummary.Cells.Item($row,7).Value2 = [double]$item.ROI
     $row++
 }
 
-# --- Sauvegarde ---
+# --- Sauvegarde et nettoyage ---
 $wb.Save()
 $wb.Close($false)
 $excel.Quit()
@@ -176,5 +200,5 @@ $excel.Quit()
 [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
 
 Write-Host "✅ Export terminé :"
-Write-Host " - Datas : toutes les exécutions des 7 derniers jours"
-Write-Host " - Summary : synthèse avec taux de succès (fraction 0-1)"
+Write-Host " - Feuille 'Datas' : toutes les exécutions des 7 derniers jours"
+Write-Host " - Feuille 'Summary' : synthèse + taux de succès + ROI + heures gagnées"
