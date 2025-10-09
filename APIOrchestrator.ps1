@@ -1,19 +1,19 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Maxime LAUGIER
-# APIOrchestrator v3.3
-# Export XLSX + Summary + ROI + Temps gagné
+# APIOrchestrator v3.4
+# Export XLSX + Summary + ROI relatif + 30 jours
 #>
 
 # --- Variables générales ---
 $Org = "extiavqvkelj"
 $Tenant = "DefaultTenant"
-$XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"   # Chemin export XLSX
+$XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # --- Paramètres ROI ---
-$CostPerHour = 20         # € / heure d’un humain
-$MinutesSavedPerJob = 10   # Temps gagné par job réussi (en minutes)
+$CostPerHour = 30         # € / heure d’un humain
+$MinutesSavedPerJob = 15  # Temps gagné par job réussi (en minutes)
 $MonthlyRPACost = 5900    # Coût global RPA mensuel (€)
 
 # --- Authentification ---
@@ -32,11 +32,11 @@ $Headers = @{
 
 # --- Récupération des folders ---
 $FoldersResponse = Invoke-RestMethod -Uri "$BaseUrl/Folders" -Headers $Headers -Method Get
-$Folders = $FoldersResponse.value | Sort-Object DisplayName -Unique  # Pas de doublons
+$Folders = $FoldersResponse.value | Sort-Object DisplayName -Unique
 
-# --- Filtrage sur 7 derniers jours ---
+# --- Filtrage sur 30 derniers jours ---
 $NowUtc = (Get-Date).ToUniversalTime()
-$FilterDate = $NowUtc.AddDays(-7).ToString("yyyy-MM-ddTHH:mm:ssZ")
+$FilterDate = $NowUtc.AddDays(-30).ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 # --- Fonction : récupération des jobs par folder ---
 function Get-UipathJobsForFolder {
@@ -125,20 +125,18 @@ foreach ($folder in $Folders) {
     }
 
     $Total = $JobsInFolder.Count
-    if ($Total -eq 0) {
-        Write-Host "⚠ Aucun job trouvé pour le folder : $($folder.DisplayName)" -ForegroundColor Yellow
-        continue
-    }
+    if ($Total -eq 0) { continue }
 
     $Success = ($JobsInFolder | Where-Object {$_.State -eq 'Successful'}).Count
     $Faulted = ($JobsInFolder | Where-Object {$_.State -eq 'Faulted'}).Count
     $Taux = if ($Total -gt 0) { [math]::Round(($Success / $Total), 2) } else { $null }
 
-    # Calcul ROI spécifique au folder
     $TotalMinutesSaved = $Success * $MinutesSavedPerJob
     $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
     $TotalValue = $TotalHoursSaved * $CostPerHour
-    $ROI = if ($MonthlyRPACost -gt 0) { [math]::Round((($TotalValue - $MonthlyRPACost) / $MonthlyRPACost), 2) } else { $null }
+
+    # ROI relatif (1 = seuil rentabilité)
+    $ROI = if ($MonthlyRPACost -gt 0) { [math]::Round(($TotalValue / $MonthlyRPACost), 2) } else { $null }
 
     $FoldersSummary += [PSCustomObject]@{
         FolderName      = $folder.DisplayName
@@ -160,7 +158,7 @@ if ($FoldersSummary.Count -gt 0) {
     $TotalMinutesSaved = $SuccessfulJobs.Count * $MinutesSavedPerJob
     $TotalHoursSaved = [math]::Round(($TotalMinutesSaved / 60), 2)
     $TotalValue = $TotalHoursSaved * $CostPerHour
-    $ROIglobal = if ($MonthlyRPACost -gt 0) { [math]::Round((($TotalValue - $MonthlyRPACost) / $MonthlyRPACost), 2) } else { $null }
+    $ROIglobal = if ($MonthlyRPACost -gt 0) { [math]::Round(($TotalValue / $MonthlyRPACost), 2) } else { $null }
 
     $FoldersSummary += [PSCustomObject]@{
         FolderName      = 'TOTAL'
@@ -200,5 +198,5 @@ $excel.Quit()
 [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
 
 Write-Host "✅ Export terminé :"
-Write-Host " - Feuille 'Datas' : toutes les exécutions des 7 derniers jours"
-Write-Host " - Feuille 'Summary' : synthèse + taux de succès + ROI + heures gagnées"
+Write-Host " - Feuille 'Datas' : toutes les exécutions des 30 derniers jours"
+Write-Host " - Feuille 'Summary' : synthèse + taux de succès + ROI relatif + heures gagnées"
