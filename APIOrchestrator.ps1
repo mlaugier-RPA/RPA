@@ -1,8 +1,9 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Maxime LAUGIER
-# APIOrchestrator v3.5
-# Export XLSX + Summary + ROI relatif + GainNet + 30 jours + résumé Datas
+# APIOrchestrator v3.7
+# Export XLSX + Summary + ROI relatif + GainNet + 30 jours + résumé Datas + colonne G supprimée
+# Gestion des valeurs vides pour TotalJobs, Successful, Faulted
 #>
 
 # --- Variables générales ---
@@ -108,6 +109,9 @@ foreach ($job in $AllJobs) {
     $row++
 }
 
+# --- Supprimer la colonne G inutile ---
+$ws.Columns.Item(7).Delete()
+
 # --- Résumé global succès / échecs dans Datas ---
 $SuccessCount = ($AllJobs | Where-Object {$_.State -eq 'Successful'}).Count
 $FaultedCount = ($AllJobs | Where-Object {$_.State -eq 'Faulted'}).Count
@@ -137,11 +141,17 @@ foreach ($folder in $Folders) {
         ($_.FolderName -replace '\s','') -ieq ($folder.DisplayName -replace '\s','')
     }
 
-    $Total = $JobsInFolder.Count
-    if ($Total -eq 0) { continue }
+    if ($JobsInFolder.Count -eq 0) { continue }   # ignore folders sans jobs
 
+    # --- Comptage robuste même si certaines valeurs sont vides ---
     $Success = ($JobsInFolder | Where-Object {$_.State -eq 'Successful'}).Count
     $Faulted = ($JobsInFolder | Where-Object {$_.State -eq 'Faulted'}).Count
+
+    if (-not $Success) { $Success = 0 }
+    if (-not $Faulted) { $Faulted = 0 }
+
+    $Total = $Success + $Faulted
+
     $Taux = if ($Total -gt 0) { [math]::Round(($Success / $Total), 2) } else { $null }
 
     $TotalMinutesSaved = $Success * $MinutesSavedPerJob
@@ -188,7 +198,7 @@ if ($FoldersSummary.Count -gt 0) {
     }
 }
 
-# --- Écriture dans Excel ---
+# --- Écriture dans Summary ---
 $row = 2
 foreach ($item in $FoldersSummary) {
     $wsSummary.Cells.Item($row,1) = $item.FolderName
@@ -217,5 +227,5 @@ $excel.Quit()
 [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
 
 Write-Host "✅ Export terminé :"
-Write-Host " - Feuille 'Datas' : toutes les exécutions des 30 derniers jours + résumé succès/échecs"
-Write-Host " - Feuille 'Summary' : synthèse + taux de succès + ROI relatif + GainNet + heures gagnées"
+Write-Host " - Feuille 'Datas' : toutes les exécutions des 30 derniers jours + résumé succès/échecs, colonne G supprimée"
+Write-Host " - Feuille 'Summary' : synthèse nettoyée, uniquement folders avec jobs + taux de succès + ROI + GainNet"
