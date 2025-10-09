@@ -1,8 +1,8 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Maxime LAUGIER
-# APIOrchestrator v3.8
-# Export XLSX + Summary + ROI relatif + GainNet + 30 jours + Datas propre
+# APIOrchestrator v3.9
+# Export XLSX + Summary + ROI + GainNet + 30 jours + Datas propre
 # Gestion des folders et jobs manquants (Flexible Folder matching, états étendus)
 #>
 
@@ -140,9 +140,9 @@ foreach ($folder in $Folders) {
     # Folder matching flexible
     $JobsInFolder = $AllJobs | Where-Object { $_.FolderName -like "*$($folder.DisplayName.Trim())*" }
 
-    if ($JobsInFolder.Count -eq 0) { continue }
+    if ($JobsInFolder.Count -eq 0) { continue }  # Ignorer folder sans jobs
 
-    # Comptage robuste même si certaines valeurs sont vides
+    # Comptage robuste
     $Success = ($JobsInFolder | Where-Object {$_.State -eq 'Successful'}).Count
     $Faulted = ($JobsInFolder | Where-Object {$_.State -eq 'Faulted'}).Count
     $Stopped = ($JobsInFolder | Where-Object {$_.State -eq 'Stopped'}).Count
