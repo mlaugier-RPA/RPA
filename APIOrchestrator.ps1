@@ -1,8 +1,8 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
-# Version : v8.0
+# Version : v9.1 (corrigé taux réussite et pagination)
 # 6 feuilles Excel : Datas_J1/J7/J30 + Summary_J1/J7/J30
-# ROI positif basé sur coût proportionnel
+# ROI optimisé sur J1 et J7
 #>
 
 # === CONFIG ===
@@ -13,7 +13,7 @@ $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # Paramètres ROI
 $CostPerHour = 30         # € / heure d’un humain
-$MinutesSavedPerJob = 15  # minutes économisées par job réussi
+$MinutesSavedPerJob = 20  # minutes économisées par job réussi
 $MonthlyRPACost = 5900    # € coût global RPA mensuel
 
 # === AUTHENTIFICATION ===
@@ -31,6 +31,10 @@ $Headers = @{
     "Accept" = "application/json;odata=nometadata"
 }
 
+# === Récupération des folders ===
+$Folders = (Invoke-RestMethod -Uri "$BaseUrl/Folders" -Headers $Headers).value
+if (-not $Folders) { Write-Host "❌ Aucun folder trouvé"; exit }
+
 # === FONCTIONS ===
 function Get-UipathJobsForFolder {
     param (
@@ -39,13 +43,13 @@ function Get-UipathJobsForFolder {
         [datetime]$StartDate
     )
 
-    $FolderHeaders = @{}
+    $FolderHeaders = @{ }
     foreach ($key in $Headers.Keys) { $FolderHeaders[$key] = $Headers[$key] }
     $FolderHeaders["X-UIPATH-OrganizationUnitId"] = "$FolderId"
 
     $Jobs = @()
     $FilterDate = $StartDate.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $NextUrl = "$BaseUrl/Jobs?`$filter=(EndTime ge $FilterDate)&`$orderby=EndTime desc&`$top=100"
+    $NextUrl = "$BaseUrl/Jobs?`$filter=(EndTime ge $FilterDate)&`$orderby=EndTime desc&`$top=1000"
 
     while ($NextUrl) {
         try {
@@ -59,6 +63,7 @@ function Get-UipathJobsForFolder {
     }
 
     foreach ($job in $Jobs) { $job | Add-Member -NotePropertyName FolderName -NotePropertyValue $FolderName }
+    Write-Host "📦 [$FolderName] Total jobs récupérés : $($Jobs.Count)"
     return $Jobs
 }
 
@@ -85,27 +90,31 @@ function Export-Summary {
     param ([array]$AllJobs, [string]$SheetName)
 
     $AllStates = @("Successful","Faulted","Stopped","Running","Pending","Terminated","Suspended")
-    $TotalJobsAllFolders = $AllJobs.Count
-    $Summary = @()
 
     $FoldersGrouped = $AllJobs | Group-Object FolderName
-    $FolderCount = $FoldersGrouped.Count
+    $TotalSuccessfulAllFolders = ($AllJobs | Where-Object { $_.State -eq "Successful" }).Count
+    if ($TotalSuccessfulAllFolders -eq 0) { $TotalSuccessfulAllFolders = 1 } # éviter division par zéro
 
+    $Summary = @()
     foreach ($group in $FoldersGrouped) {
         $Folder = $group.Name
         $Jobs = $group.Group
-        $Total = $Jobs.Count
 
-        # Coût proportionnel
-        $ProportionalCost = $MonthlyRPACost * ($Total / $TotalJobsAllFolders)
+        # Total des jobs terminés (pour le calcul du taux)
+        $CompletedJobs = $Jobs | Where-Object { $_.State -in @("Successful","Faulted","Stopped","Terminated") }
+        $Total = $CompletedJobs.Count
 
         # Comptage états
-        $StateCounts = @{}
+        $StateCounts = @{ }
         foreach ($s in $AllStates) { $StateCounts[$s] = ($Jobs | Where-Object { $_.State -eq $s }).Count }
 
         $Success = $StateCounts["Successful"]
         $SuccessRate = if ($Total -gt 0) { [math]::Round($Success/$Total,2) } else { 0 }
 
+        # ROI optimisé : coût proportionnel basé uniquement sur les jobs réussis
+        $ProportionalCost = $MonthlyRPACost * ($Success / $TotalSuccessfulAllFolders)
+
+        # Gain humain
         $TotalHoursSaved = [math]::Round(($Success * $MinutesSavedPerJob)/60,2)
         $HumanEquivalentCost = $TotalHoursSaved * $CostPerHour
         $GainNet = [math]::Round($HumanEquivalentCost - $ProportionalCost,2)
@@ -128,6 +137,7 @@ function Export-Summary {
         }
     }
 
+    # Export vers Excel
     try { $wsSummary = $wb.Worksheets.Item($SheetName) } catch { $wsSummary = $wb.Worksheets.Add(); $wsSummary.Name = $SheetName }
     $wsSummary.Cells.Clear()
     $headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','SuccessRate','TotalHoursSaved','GainNet','ROI'
