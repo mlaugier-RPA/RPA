@@ -3,6 +3,7 @@
 # Version : v9.1 
 # Maxime LAUGIER
 # Update du 13/10/2025
+# Période de temps : J-30 jours, J-7days et j-24h
 #>
 
 # === variables fixes pour tout le script ===
