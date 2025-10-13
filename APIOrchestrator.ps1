@@ -3,7 +3,6 @@
 # Version : v9.1 
 # Maxime LAUGIER
 # Update du 13/10/2025
-# Période de temps : J-30 jours, J-7days et j-24h & j-354
 #>
 
 # === variables fixes pour tout le script ===
@@ -172,7 +171,6 @@ $Periods = @{
     "J1"  = $NowUtc.AddDays(-1)
     "J7"  = $NowUtc.AddDays(-7)
     "J30" = $NowUtc.AddDays(-30)
-    "J354" = $NowUtc.AddDays(-354)
 }
 
 
