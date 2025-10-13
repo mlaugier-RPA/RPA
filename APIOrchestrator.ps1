@@ -1,8 +1,7 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
-# Version : v9.1 (corrigé taux réussite et pagination)
-# 6 feuilles Excel : Datas_J1/J7/J30 + Summary_J1/J7/J30
-# ROI optimisé sur J1 et J7
+# Version : v9.1 
+#Maxime LAUGIER
 #>
 
 # === CONFIG ===
