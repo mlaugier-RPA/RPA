@@ -172,6 +172,7 @@ $Periods = @{
     "J1"  = $NowUtc.AddDays(-1)
     "J7"  = $NowUtc.AddDays(-7)
     "J30" = $NowUtc.AddDays(-30)
+    "J354" = $NowUtc.AddDays(-354)
 }
 
 
