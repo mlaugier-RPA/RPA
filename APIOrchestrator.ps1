@@ -1,21 +1,24 @@
 ﻿<#
 # API Orchestrator <=> PowerBI
 # Version : v9.1 
-#Maxime LAUGIER
+# Maxime LAUGIER
+# Update du 13/10/2025
 #>
 
-# === CONFIG ===
+# === variables fixes pour tout le script ===
 $Org = "extiavqvkelj"
 $Tenant = "DefaultTenant"
 $XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
-# Paramètres ROI
+
+# === Paramètres ROI pour le calcul du gain ===
 $CostPerHour = 30         # € / heure d’un humain
 $MinutesSavedPerJob = 20  # minutes économisées par job réussi
 $MonthlyRPACost = 5900    # € coût global RPA mensuel
 
-# === AUTHENTIFICATION ===
+
+# === authentification sur l'api et on essaie de récupérer le token ===
 $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
 $headers.Add("Content-Type", "application/x-www-form-urlencoded")
 
@@ -25,16 +28,20 @@ $response = Invoke-RestMethod "https://cloud.uipath.com/$Org/identity_/connect/t
 $PAT = $response.access_token
 if (-not $PAT) { Write-Host "❌ Token introuvable" -ForegroundColor Red; exit }
 
+
+# === Après avoir récupérer le token dynamique, on set-up les headers pour le call API ===
 $Headers = @{
     "Authorization" = "Bearer $PAT"
     "Accept" = "application/json;odata=nometadata"
 }
 
+
 # === Récupération des folders ===
 $Folders = (Invoke-RestMethod -Uri "$BaseUrl/Folders" -Headers $Headers).value
 if (-not $Folders) { Write-Host "❌ Aucun folder trouvé"; exit }
 
-# === FONCTIONS ===
+
+# === Fonction pour avoir l'ID des folder dans Robot_Extia d'UIpath Orchestrator et faire un for each pour checker chaque dossier ===
 function Get-UipathJobsForFolder {
     param (
         [string]$FolderId,
@@ -66,6 +73,8 @@ function Get-UipathJobsForFolder {
     return $Jobs
 }
 
+
+# === Fonction pour récupérer les jobs trouver dans la doc API d'UiPath Orchestrator ===
 function Export-JobsToSheet {
     param ([array]$AllJobs, [string]$SheetName)
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
@@ -85,6 +94,8 @@ function Export-JobsToSheet {
     if ($ws.Columns.Count -ge 7) { $ws.Columns.Item(7).Delete() | Out-Null }
 }
 
+
+# === Fonction pour exporter les jobs dans une sheet spécifique ===
 function Export-Summary {
     param ([array]$AllJobs, [string]$SheetName)
 
@@ -136,7 +147,8 @@ function Export-Summary {
         }
     }
 
-    # Export vers Excel
+
+# === Export vers Excel ===
     try { $wsSummary = $wb.Worksheets.Item($SheetName) } catch { $wsSummary = $wb.Worksheets.Add(); $wsSummary.Name = $SheetName }
     $wsSummary.Cells.Clear()
     $headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','SuccessRate','TotalHoursSaved','GainNet','ROI'
@@ -161,11 +173,13 @@ $Periods = @{
     "J30" = $NowUtc.AddDays(-30)
 }
 
+
 # === Excel ===
 $excel = New-Object -ComObject Excel.Application
 $excel.Visible = $false
 $excel.DisplayAlerts = $false
 if (Test-Path $XlsPath) { $wb = $excel.Workbooks.Open($XlsPath) } else { $wb = $excel.Workbooks.Add(); $wb.SaveAs($XlsPath,51) }
+
 
 # === Extraction + export ===
 foreach ($period in $Periods.Keys) {
@@ -179,6 +193,7 @@ foreach ($period in $Periods.Keys) {
     Export-Summary -AllJobs $AllJobs -SheetName "Summary_$period"
 }
 
+
 # === Sauvegarde et fermeture Excel ===
 $wb.Save()
 $wb.Close($false)
@@ -186,4 +201,6 @@ $excel.Quit()
 [System.Runtime.Interopservices.Marshal]::ReleaseComObject($wb) | Out-Null
 [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
 
+
+# === On écrit dans la console que l'export des 6 excel feuilles sont OK ===
 Write-Host "✅ Export terminé ! Feuilles : Datas_J1/J7/J30 et Summary_J1/J7/J30"
