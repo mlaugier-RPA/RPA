@@ -1,7 +1,8 @@
 ﻿<#
 # API Orchestrator <=> PowerBI - Script Finalisé
-# Version : v9.8
-# Correction principale: Les jobs avec un statut API NUL ou VIDE sont désormais comptabilisés dans 'Pending'.
+# Version : v9.14
+# FINAL : Ajout des colonnes de ROI (SuccessRate, TotalHoursSaved, GainNet, ROI) à la fin des colonnes de chaque job sur les feuilles 'Datas_J*'.
+# Suppression des colonnes de totaux globaux des feuilles Datas.
 # Maxime LAUGIER
 # Update du 14/10/2025
 #>
@@ -79,9 +80,13 @@ function Get-UipathJobsForFolder {
             $Response = Invoke-RestMethod -Uri $NextUrl -Headers $FolderHeaders -Method Get
             if ($Response.value) { $Jobs += $Response.value }
             $NextUrl = $Response.'@odata.nextLink' # Gère la pagination
+            
+            # Délai entre chaque page de 1000 jobs pour éviter les 429 sur les gros volumes
+            if ($NextUrl) { Start-Sleep -Milliseconds 200 } 
+            
         } catch {
             $StatusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "Inconnu" }
-            Write-Host "❌ Erreur (HTTP $StatusCode) pour folder $FolderName. Récupération abandonnée pour ce dossier." -ForegroundColor Red
+            Write-Host "❌ Erreur (HTTP $StatusCode) pour folder $FolderName. Récupération abandonnée pour ce dossier. Vérifiez les permissions si c'est un 403." -ForegroundColor Red
             $NextUrl = $null 
         }
     }
@@ -92,32 +97,76 @@ function Get-UipathJobsForFolder {
 }
 
 
-# === Fonction pour exporter les jobs vers la feuille de données ===
+# === Fonction pour exporter les jobs vers la feuille de données (METRIQUES ROI UNIQUEMENT) ===
 function Export-JobsToSheet {
-    param ([array]$AllJobs, [string]$SheetName)
+    param (
+        [array]$AllJobs, 
+        [string]$SheetName,
+        [array]$SummaryData, # Métriques ROI par dossier
+        [int]$TotalJobsCount, # Non utilisé pour l'export, gardé pour référence
+        [int]$TotalSuccessfulCount, # Non utilisé pour l'export, gardé pour référence
+        [double]$TotalHoursSavedSum # Non utilisé pour l'export, gardé pour référence
+    )
+    
+    # Convertir le SummaryData en hashtable pour un accès rapide par FolderName
+    $SummaryLookup = @{}
+    $SummaryData | ForEach-Object { $SummaryLookup[$_.FolderName] = $_ }
+    
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
+    
+    # --- EN-TÊTES DE DONNÉES (Cols A à F) ---
     $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName'
     for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1, $i+1) = $headers[$i] }
+
+    # --- EN-TÊTES ROI PAR DOSSIER (Cols G à J) ---
+    $headersROI = 'SuccessRate','TotalHoursSaved','GainNet','ROI'
+    $col = $headers.Count + 1 # Démarre à la colonne G (7)
+    foreach ($h in $headersROI) {
+        $ws.Cells.Item(1, $col) = $h
+        $col++
+    }
+    
+    # Formatage : Gras pour tous les en-têtes
+    $ws.Range("A1:J1").Font.Bold = $true
+    
+    # Écriture des données des Jobs et des métriques ROI correspondantes (à partir de la ligne 2)
     $row=2
     foreach ($job in $AllJobs) {
+        # Écriture des données de Job (Cols A-F)
         $ws.Cells.Item($row,1) = $job.Id
         $ws.Cells.Item($row,2) = $job.ReleaseName
         $ws.Cells.Item($row,3) = $job.State
         $ws.Cells.Item($row,4) = $job.StartTime
         $ws.Cells.Item($row,5) = $job.EndTime
         $ws.Cells.Item($row,6) = $job.FolderName
+        
+        # Écriture des métriques ROI (Cols G-J)
+        $summaryItem = $SummaryLookup[$job.FolderName]
+        if ($summaryItem) {
+            $ws.Cells.Item($row, 7) = $summaryItem.SuccessRate
+            $ws.Cells.Item($row, 8) = $summaryItem.TotalHoursSaved
+            $ws.Cells.Item($row, 9) = $summaryItem.GainNet
+            $ws.Cells.Item($row, 10) = $summaryItem.ROI
+        }
+        
         $row++
     }
-    if ($ws.Columns.Count -ge 7) { $ws.Columns.Item(7).Delete() | Out-Null }
+    
+    # Ajustement de la largeur des colonnes
+    $ws.Columns.AutoFit() | Out-Null
+    
+    # Nettoyage des colonnes excédentaires après la colonne J (10)
+    if ($ws.Columns.Count -ge 11) { $ws.Columns.Item(11).Delete() | Out-Null }
 }
 
 
-# === Fonction pour exporter le résumé (avec calcul du ROI) ===
+# === Fonction pour calculer le résumé (RETOURNE LE TABLEAU) ===
 function Export-Summary {
-    param ([array]$AllJobs, [string]$SheetName)
+    param ([array]$AllJobs)
 
-    $AllStates = @("Successful","Faulted","Stopped","Running","Pending","Terminated","Suspended")
+    # Ajout des statuts 'Waiting' et 'Stopping' pour assurer une comptabilisation complète.
+    $AllStates = @("Successful","Faulted","Stopped","Running","Pending","Terminated","Suspended", "Waiting", "Stopping")
 
     # On compte le total des jobs réussis et TERMINÉS (EndTime non nul) dans TOUS les folders pour la clé de répartition du coût.
     $TotalSuccessfulAllFolders = ($AllJobs | Where-Object { $_.State -eq "Successful" -and $_.EndTime -ne $null }).Count
@@ -140,13 +189,12 @@ function Export-Summary {
         $StateCounts = @{ }
         foreach ($s in $AllStates) { $StateCounts[$s] = ($Jobs | Where-Object { $_.State -eq $s }).Count }
         
-        # -------------------------------------------------------------------------------------------------------------------
-        # CORRECTION V9.8: Traitement des jobs avec statut NUL ou VIDE en les ajoutant au décompte 'Pending'.
+        # Traitement des jobs avec statut NUL ou VIDE en les ajoutant au décompte 'Pending'.
         $JobsWithoutState = $Jobs | Where-Object { $_.State -eq $null -or $_.State -eq "" }
         $CountJobsWithoutState = $JobsWithoutState.Count
+        if (-not $StateCounts["Pending"]) { $StateCounts["Pending"] = 0 }
         $StateCounts["Pending"] += $CountJobsWithoutState
-        # -------------------------------------------------------------------------------------------------------------------
-
+        
         $Success = $StateCounts["Successful"]
         $SuccessRate = if ($TotalCompleted -gt 0) { [math]::Round($Success/$TotalCompleted,2) } else { 0 }
         
@@ -164,10 +212,10 @@ function Export-Summary {
         $GainNet = [math]::Round($HumanEquivalentCost - $ProportionalCost,2)
         $ROI = if ($ProportionalCost -ne 0) { [math]::Round($GainNet/$ProportionalCost,2) } else { 0 }
 
-        # --- DIAGNOSTIC MISE À JOUR ---
-        # Si la somme des statuts est toujours inférieure au total téléchargé après avoir inclus les jobs sans état,
-        # alors il y a vraiment des statuts inconnus que vous devez ajouter à $AllStates.
-        $TotalStates = $StateCounts["Successful"] + $StateCounts["Faulted"] + $StateCounts["Stopped"] + $StateCounts["Running"] + $StateCounts["Pending"] + $StateCounts["Terminated"] + $StateCounts["Suspended"]
+        # --- DIAGNOSTIC ---
+        $TotalStates = 0
+        foreach ($s in $AllStates) { $TotalStates += $StateCounts[$s] }
+        
         if ($TotalStates -ne $TotalDownloaded) {
             $UnknownStates = $Jobs | Where-Object { $_.State -notin $AllStates -and $_.State -ne $null -and $_.State -ne "" } | Select-Object -ExpandProperty State -Unique
             if ($UnknownStates.Count -gt 0) {
@@ -186,23 +234,34 @@ function Export-Summary {
             Pending = $StateCounts["Pending"]
             Terminated = $StateCounts["Terminated"]
             Suspended = $StateCounts["Suspended"]
+            Waiting = $StateCounts["Waiting"]
+            Stopping = $StateCounts["Stopping"]
             SuccessRate = $SuccessRate
             TotalHoursSaved = $TotalHoursSaved
             GainNet = $GainNet
             ROI = $ROI
         }
     }
+    
+    # RETOURNE LE TABLEAU DE SYNTHÈSE
+    return $Summary
+}
 
 
-# === Export vers Excel ===
+# === Fonction pour exporter le résumé vers la feuille Excel ===
+function Export-SummaryToSheet {
+    param ([array]$SummaryData, [string]$SheetName)
+    
     try { $wsSummary = $wb.Worksheets.Item($SheetName) } catch { $wsSummary = $wb.Worksheets.Add(); $wsSummary.Name = $SheetName }
     $wsSummary.Cells.Clear()
-    $headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','SuccessRate','TotalHoursSaved','GainNet','ROI'
+    
+    # Mise à jour des en-têtes
+    $headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','Waiting','Stopping','SuccessRate','TotalHoursSaved','GainNet','ROI'
     for ($i=0; $i -lt $headersSummary.Count; $i++) { $wsSummary.Cells.Item(1,$i+1) = $headersSummary[$i] }
     $row=2
-    foreach ($item in $Summary) {
+    foreach ($item in $SummaryData) {
         # La vérification est nécessaire pour filtrer les lignes vides aberrantes.
-        $TotalStates = $item.Successful + $item.Faulted + $item.Stopped + $item.Running + $item.Pending + $item.Terminated + $item.Suspended
+        $TotalStates = $item.Successful + $item.Faulted + $item.Stopped + $item.Running + $item.Pending + $item.Terminated + $item.Suspended + $item.Waiting + $item.Stopping
         if ($TotalStates -eq 0) { continue }
 
         $col=1
@@ -213,6 +272,7 @@ function Export-Summary {
         $row++
     }
 }
+
 
 # === Périodes ===
 $NowUtc = (Get-Date).ToUniversalTime()
@@ -242,7 +302,7 @@ try {
 }
 
 
-# === Extraction + export ===
+# === Extraction + export (BOUCLE PRINCIPALE) ===
 foreach ($period in $Periods.Keys) {
     Write-Host ""
     Write-Host "=== Démarrage de l'extraction pour la période $period ===" -ForegroundColor Cyan
@@ -252,10 +312,27 @@ foreach ($period in $Periods.Keys) {
         Start-Sleep -Milliseconds 500
         $AllJobs += Get-UipathJobsForFolder -FolderId $folder.Id -FolderName $folder.DisplayName -StartDate $Periods[$period]
     }
-    Write-Host "Export de $($AllJobs.Count) jobs vers Datas_$period..."
-    Export-JobsToSheet -AllJobs $AllJobs -SheetName "Datas_$period"
+    
+    # 1. Calculer le résumé et capturer les données
     Write-Host "Calcul du résumé pour Summary_$period..."
-    Export-Summary -AllJobs $AllJobs -SheetName "Summary_$period"
+    $SummaryData = Export-Summary -AllJobs $AllJobs
+
+    # 2. Calculer les totaux globaux pour l'export "Datas" (Valeurs conservées pour la console/référence mais non exportées)
+    $TotalJobsCount = $AllJobs.Count
+    $TotalSuccessfulCount = ($SummaryData | Measure-Object -Property Successful -Sum).Sum
+    $TotalHoursSavedSum = [math]::Round(($SummaryData | Measure-Object -Property TotalHoursSaved -Sum).Sum, 2)
+
+    # 3. Exporter les données brutes AVEC les métriques ROI (Cols G-J)
+    Write-Host "Export de $($TotalJobsCount) jobs vers Datas_$period avec métriques ROI..."
+    Export-JobsToSheet -AllJobs $AllJobs -SheetName "Datas_$period" `
+        -SummaryData $SummaryData `
+        -TotalJobsCount $TotalJobsCount `
+        -TotalSuccessfulCount $TotalSuccessfulCount `
+        -TotalHoursSavedSum $TotalHoursSavedSum
+
+    # 4. Exporter le résumé
+    Write-Host "Export du résumé vers Summary_$period..."
+    Export-SummaryToSheet -SummaryData $SummaryData -SheetName "Summary_$period"
 }
 
 
