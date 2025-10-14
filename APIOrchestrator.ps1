@@ -1,7 +1,7 @@
 ﻿<#
-# API Orchestrator <=> PowerBI - Script Corrigé
-# Version : v9.4
-# Correction principale: Ajout d'un Start-Sleep pour éviter l'erreur HTTP 429 (Too Many Requests).
+# API Orchestrator <=> PowerBI - Script Finalisé
+# Version : v9.8
+# Correction principale: Les jobs avec un statut API NUL ou VIDE sont désormais comptabilisés dans 'Pending'.
 # Maxime LAUGIER
 # Update du 14/10/2025
 #>
@@ -80,7 +80,6 @@ function Get-UipathJobsForFolder {
             if ($Response.value) { $Jobs += $Response.value }
             $NextUrl = $Response.'@odata.nextLink' # Gère la pagination
         } catch {
-            # Affichage de l'erreur (y compris 429) et arrêt de la récupération pour ce folder.
             $StatusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "Inconnu" }
             Write-Host "❌ Erreur (HTTP $StatusCode) pour folder $FolderName. Récupération abandonnée pour ce dossier." -ForegroundColor Red
             $NextUrl = $null 
@@ -129,6 +128,9 @@ function Export-Summary {
     foreach ($group in $FoldersGrouped) {
         $Folder = $group.Name
         $Jobs = $group.Group
+        
+        # On ignore les groupes de dossiers qui n'ont pas de jobs pour cette période.
+        if ($Jobs.Count -eq 0) { continue }
 
         $TotalDownloaded = $Jobs.Count
         $CompletedJobs = $Jobs | Where-Object { $_.State -in @("Successful","Faulted","Stopped","Terminated") }
@@ -137,6 +139,13 @@ function Export-Summary {
         # Comptage états
         $StateCounts = @{ }
         foreach ($s in $AllStates) { $StateCounts[$s] = ($Jobs | Where-Object { $_.State -eq $s }).Count }
+        
+        # -------------------------------------------------------------------------------------------------------------------
+        # CORRECTION V9.8: Traitement des jobs avec statut NUL ou VIDE en les ajoutant au décompte 'Pending'.
+        $JobsWithoutState = $Jobs | Where-Object { $_.State -eq $null -or $_.State -eq "" }
+        $CountJobsWithoutState = $JobsWithoutState.Count
+        $StateCounts["Pending"] += $CountJobsWithoutState
+        # -------------------------------------------------------------------------------------------------------------------
 
         $Success = $StateCounts["Successful"]
         $SuccessRate = if ($TotalCompleted -gt 0) { [math]::Round($Success/$TotalCompleted,2) } else { 0 }
@@ -154,6 +163,18 @@ function Export-Summary {
         $HumanEquivalentCost = $TotalHoursSaved * $CostPerHour
         $GainNet = [math]::Round($HumanEquivalentCost - $ProportionalCost,2)
         $ROI = if ($ProportionalCost -ne 0) { [math]::Round($GainNet/$ProportionalCost,2) } else { 0 }
+
+        # --- DIAGNOSTIC MISE À JOUR ---
+        # Si la somme des statuts est toujours inférieure au total téléchargé après avoir inclus les jobs sans état,
+        # alors il y a vraiment des statuts inconnus que vous devez ajouter à $AllStates.
+        $TotalStates = $StateCounts["Successful"] + $StateCounts["Faulted"] + $StateCounts["Stopped"] + $StateCounts["Running"] + $StateCounts["Pending"] + $StateCounts["Terminated"] + $StateCounts["Suspended"]
+        if ($TotalStates -ne $TotalDownloaded) {
+            $UnknownStates = $Jobs | Where-Object { $_.State -notin $AllStates -and $_.State -ne $null -and $_.State -ne "" } | Select-Object -ExpandProperty State -Unique
+            if ($UnknownStates.Count -gt 0) {
+                 Write-Host "⚠️ ATTENTION : [$Folder] - $(($TotalDownloaded - $TotalStates)) job(s) avec un statut RÉELLEMENT non répertorié : $($UnknownStates -join ', ')" -ForegroundColor DarkYellow
+            }
+        }
+        # ---------------------------
 
         $Summary += [PSCustomObject]@{
             FolderName = $Folder
@@ -180,6 +201,10 @@ function Export-Summary {
     for ($i=0; $i -lt $headersSummary.Count; $i++) { $wsSummary.Cells.Item(1,$i+1) = $headersSummary[$i] }
     $row=2
     foreach ($item in $Summary) {
+        # La vérification est nécessaire pour filtrer les lignes vides aberrantes.
+        $TotalStates = $item.Successful + $item.Faulted + $item.Stopped + $item.Running + $item.Pending + $item.Terminated + $item.Suspended
+        if ($TotalStates -eq 0) { continue }
+
         $col=1
         foreach ($key in $headersSummary) {
             $wsSummary.Cells.Item($row,$col) = $item.$key
@@ -223,7 +248,7 @@ foreach ($period in $Periods.Keys) {
     Write-Host "=== Démarrage de l'extraction pour la période $period ===" -ForegroundColor Cyan
     $AllJobs = @()
     foreach ($folder in $Folders) {
-        # CORRECTION 429: Délai de 500ms (0.5s) entre chaque appel par dossier
+        # Délai de 500ms (0.5s) entre chaque appel par dossier pour éviter le 429
         Start-Sleep -Milliseconds 500
         $AllJobs += Get-UipathJobsForFolder -FolderId $folder.Id -FolderName $folder.DisplayName -StartDate $Periods[$period]
     }
