@@ -35,13 +35,26 @@ function Get-SiretsFromSiren {
                 return $null
             }
 
-            return $etablissements | ForEach-Object {
+            # === Filtrer uniquement les établissements actifs ===
+            $actifs = $etablissements | Where-Object {
+                $_.periodesEtablissement[0].etatAdministratifEtablissement -eq "A"
+            }
+
+            if (-not $actifs) {
+                Write-Warning "Aucun établissement actif pour SIREN $Siren"
+                return $null
+            }
+
+            # === Créer un objet lisible ===
+            return $actifs | ForEach-Object {
+                $periode = $_.periodesEtablissement[0]
                 [PSCustomObject]@{
-                    SIREN = $Siren
-                    SIRET = $_.siret
-                    Etat = $_.etatAdministratifEtablissement
-                    RaisonSociale = $_.uniteLegale.denominationUniteLegale
-                    Adresse = (
+                    SIREN     = $Siren
+                    SIRET     = $_.siret
+                    Etat      = $periode.etatAdministratifEtablissement
+                    Nom       = $_.uniteLegale.nomUniteLegale
+                    DateDebut = $periode.dateDebut
+                    Adresse   = (
                         "$($_.adresseEtablissement.numeroVoieEtablissement) " +
                         "$($_.adresseEtablissement.typeVoieEtablissement) " +
                         "$($_.adresseEtablissement.libelleVoieEtablissement) " +
@@ -68,6 +81,7 @@ function Get-SiretsFromSiren {
     Write-Warning "Échec après $maxRetry retries pour SIREN $Siren"
     return $null
 }
+
 
 # === TRAITEMENT DU CSV ===
 $entreprises = Import-Csv -Path $inputFile -Delimiter ";" -Encoding UTF8
