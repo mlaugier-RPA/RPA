@@ -1,7 +1,7 @@
 ﻿<#
 # API Orchestrator <=> PowerBI - Script Finalisé
-# Version : v10.5
-# FINAL : Ajout des colonnes de ROI (SuccessRate, TotalHoursSaved, GainNet, ROI) + détails jobs (InputArgs, OutputArgs, LastLogs)
+# Version : v10.7
+# FINAL : Suppression fichier Excel existant + logs codés (Info, Warn, Error) par job
 # Gestion HTTP 400 / 429 pour récupération logs
 # Maxime LAUGIER
 # Update du 20/10/2025
@@ -12,6 +12,17 @@ $Org = "extiavqvkelj"
 $Tenant = "DefaultTenant"
 $XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
+
+# === Suppression du fichier Excel existant au début ===
+if (Test-Path $XlsPath) {
+    try {
+        Remove-Item $XlsPath -Force
+        Write-Host "🗑️ Ancien fichier Excel supprimé : $XlsPath"
+    } catch {
+        Write-Host "❌ Impossible de supprimer le fichier Excel : $($_.Exception.Message)" -ForegroundColor Red
+        exit
+    }
+}
 
 # === Paramètres ROI pour le calcul du gain ===
 $CostPerHour = 30          # € / heure d’un humain
@@ -52,7 +63,7 @@ try {
 if (-not $Folders) { Write-Host "❌ Aucun folder trouvé" -ForegroundColor Yellow; exit }
 Write-Host "📁 $(@($Folders).Count) folders trouvés."
 
-# === Fonction pour récupérer les jobs + détails + logs ===
+# === Fonction pour récupérer les jobs + logs codés Info/Warning/Error ===
 function Get-UipathJobsForFolder {
     param (
         [string]$FolderId,
@@ -81,25 +92,12 @@ function Get-UipathJobsForFolder {
         }
     }
 
-    # === Enrichissement des jobs avec InputArgs, OutputArgs et LastLogs ===
+    # === Récupération logs codés Info/Warning/Error pour chaque job terminé ===
     foreach ($job in $Jobs | Where-Object { $_.State -notin @("Running","Pending") }) {
         Start-Sleep -Milliseconds 400
         try {
-            $JobDetailsUrl = "$BaseUrl/Jobs($($job.Id))"
-            $JobDetails = Invoke-RestMethod -Uri $JobDetailsUrl -Headers $FolderHeaders -Method Get -ErrorAction Stop
-
-            $InputArgs = $null
-            $OutputArgs = $null
-            if ($JobDetails.InputArguments) {
-                try { $InputArgs = ($JobDetails.InputArguments | ConvertFrom-Json | Out-String).Trim() } catch { $InputArgs = $JobDetails.InputArguments }
-            }
-            if ($JobDetails.OutputArguments) {
-                try { $OutputArgs = ($JobDetails.OutputArguments | ConvertFrom-Json | Out-String).Trim() } catch { $OutputArgs = $JobDetails.OutputArguments }
-            }
-
-            # --- Logs via JobKey ---
             $JobKeyQuoted = [uri]::EscapeDataString("'$($job.Key)'")
-            $LogsUrl = "$BaseUrl/RobotLogs?`$filter=JobKey%20eq%20$JobKeyQuoted&`$orderby=TimeStamp%20desc&`$top=3"
+            $LogsUrl = "$BaseUrl/RobotLogs?`$filter=JobKey%20eq%20$JobKeyQuoted&`$orderby=TimeStamp%20desc"
 
             $attempt = 0
             $LogsResp = $null
@@ -115,13 +113,27 @@ function Get-UipathJobsForFolder {
                 }
             }
 
-            $LogMessages = if ($LogsResp.value) { ($LogsResp.value | Select-Object -ExpandProperty Message) -join " | " } else { "" }
+            # --- Logs codés par type ---
+            $InfoLogs = @(); $WarnLogs = @(); $ErrorLogs = @()
+            if ($LogsResp.value) {
+                foreach ($l in $LogsResp.value) {
+                    switch ($l.Level) {
+                        "Info" { $InfoLogs += $l.Message }
+                        "Warn" { $WarnLogs += $l.Message }
+                        "Error" { $ErrorLogs += $l.Message }
+                        default { }
+                    }
+                }
+            }
+            $job | Add-Member -NotePropertyName LogsInfo -NotePropertyValue $InfoLogs -Force
+            $job | Add-Member -NotePropertyName LogsWarn -NotePropertyValue $WarnLogs -Force
+            $job | Add-Member -NotePropertyName LogsError -NotePropertyValue $ErrorLogs -Force
 
-            $job | Add-Member -NotePropertyName InputArgs -NotePropertyValue $InputArgs -Force
-            $job | Add-Member -NotePropertyName OutputArgs -NotePropertyValue $OutputArgs -Force
-            $job | Add-Member -NotePropertyName LastLogs -NotePropertyValue $LogMessages -Force
         } catch {
-            Write-Host "⚠️ Détails/logs non récupérés pour job $($job.Id)" -ForegroundColor DarkYellow
+            Write-Host "⚠️ Logs non récupérés pour job $($job.Id)" -ForegroundColor DarkYellow
+            $job | Add-Member -NotePropertyName LogsInfo -NotePropertyValue @() -Force
+            $job | Add-Member -NotePropertyName LogsWarn -NotePropertyValue @() -Force
+            $job | Add-Member -NotePropertyName LogsError -NotePropertyValue @() -Force
         }
     }
 
@@ -130,7 +142,7 @@ function Get-UipathJobsForFolder {
     return $Jobs
 }
 
-# === Export Jobs vers Excel ===
+# === Export Jobs vers Excel (sans InputArgs/OutputArgs/LastLogs) ===
 function Export-JobsToSheet {
     param (
         [array]$AllJobs,
@@ -143,7 +155,7 @@ function Export-JobsToSheet {
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
 
-    $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName','InputArgs','OutputArgs','LastLogs'
+    $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName'
     $headersROI = 'SuccessRate','TotalHoursSaved','GainNet','ROI'
     $col=1
     foreach ($h in $headers + $headersROI) { $ws.Cells.Item(1,$col) = $h; $col++ }
@@ -157,16 +169,13 @@ function Export-JobsToSheet {
         $ws.Cells.Item($row,4) = $job.StartTime
         $ws.Cells.Item($row,5) = $job.EndTime
         $ws.Cells.Item($row,6) = $job.FolderName
-        $ws.Cells.Item($row,7) = $job.InputArgs
-        $ws.Cells.Item($row,8) = $job.OutputArgs
-        $ws.Cells.Item($row,9) = $job.LastLogs
 
         $summaryItem = $SummaryLookup[$job.FolderName]
         if ($summaryItem) {
-            $ws.Cells.Item($row,10) = $summaryItem.SuccessRate
-            $ws.Cells.Item($row,11) = $summaryItem.TotalHoursSaved
-            $ws.Cells.Item($row,12) = $summaryItem.GainNet
-            $ws.Cells.Item($row,13) = $summaryItem.ROI
+            $ws.Cells.Item($row,7) = $summaryItem.SuccessRate
+            $ws.Cells.Item($row,8) = $summaryItem.TotalHoursSaved
+            $ws.Cells.Item($row,9) = $summaryItem.GainNet
+            $ws.Cells.Item($row,10) = $summaryItem.ROI
         }
         $row++
     }
@@ -175,7 +184,7 @@ function Export-JobsToSheet {
 }
 
 # === Fonctions Export-Summary et Export-SummaryToSheet ===
-# (Conservées identiques à ton script original, calcul ROI etc.)
+# (inchangées depuis v10.5, calcul ROI etc.)
 
 # === Périodes ===
 $NowUtc = (Get-Date).ToUniversalTime()
@@ -187,7 +196,8 @@ try {
     $excel = New-Object -ComObject Excel.Application
     $excel.Visible = $false
     $excel.DisplayAlerts = $false
-    if (Test-Path $XlsPath) { $wb = $excel.Workbooks.Open($XlsPath) } else { $wb = $excel.Workbooks.Add(); $wb.SaveAs($XlsPath,51) }
+    $wb = $excel.Workbooks.Add()
+    $wb.SaveAs($XlsPath,51)
 } catch { Write-Host "❌ Erreur Excel" -ForegroundColor Red; exit }
 
 # === Extraction + export ===
