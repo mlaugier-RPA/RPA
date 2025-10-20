@@ -2,7 +2,7 @@
 # API Insee 
 # Version : v1.0
 # Maxime LAUGIER
-# Update du 15/10/2025
+# Update du 20/10/2025
 #>
 
 # === CONFIGURATION ===
