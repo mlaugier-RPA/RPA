@@ -13,7 +13,7 @@ $XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # === Paramètres ROI pour le calcul du gain ===
-$CostPerHour = 20          # € / heure d’un humain
+$CostPerHour = 30          # € / heure d’un humain
 $MinutesSavedPerJob = 20   # minutes économisées par job réussi
 $MonthlyRPACost = 5900     # € coût global RPA mensuel
 
