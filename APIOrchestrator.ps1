@@ -1,11 +1,10 @@
 ﻿# =====================================================================
 # API Orchestrator <=> PowerBI - Script Finalisé avec LOGS
-# Version : v10.0
-# FINAL : Ajout des feuilles Logs_J* (Info, Warn, Error, Trace)
+# Version : v10.3 Ultra Stable
+# FINAL : Nettoyage renforcé des messages Excel
 # Auteur : Maxime LAUGIER
-# Update du 21/10/2025
+# Update du 22/10/2025
 # =====================================================================
-
 
 # === variables fixes pour tout le script ===
 $Org = "extiavqvkelj"
@@ -13,17 +12,13 @@ $Tenant = "DefaultTenant"
 $XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
-
 # === Paramètres ROI pour le calcul du gain ===
-$CostPerHour = 30          # € / heure d’un humain
+$CostPerHour = 20          # € / heure d’un humain
 $MinutesSavedPerJob = 20   # minutes économisées par job réussi
 $MonthlyRPACost = 5900     # € coût global RPA mensuel
 
-
-
 # === Suppression du fichier Excel existant au début ===
 Get-Process excel -ErrorAction SilentlyContinue | Stop-Process -Force
-
 if (Test-Path $XlsPath) {
     try {
         Remove-Item $XlsPath -Force
@@ -34,13 +29,10 @@ if (Test-Path $XlsPath) {
     }
 }
 
-
-
 # === Authentification ===
 Write-Host "🔑 Tentative de récupération du jeton d'accès..."
 $headers = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
 $headers.Add("Content-Type", "application/x-www-form-urlencoded")
-
 $body = "client_id=92615cee-13a8-4195-b52a-3543976033cc&client_secret=lOa%5EtVshMA!mLwLsI8kbwNO)8QH%23p1c%23Qa_jmIN%3FCkYo~YOevEs73EVc(Cb(N2jy&grant_type=client_credentials"
 
 try {
@@ -50,17 +42,14 @@ try {
     Write-Host "❌ Erreur d'authentification : $($_.Exception.Message)" -ForegroundColor Red
     exit
 }
-
 if (-not $PAT) { Write-Host "❌ Token introuvable" -ForegroundColor Red; exit }
 Write-Host "✅ Jeton récupéré."
-
 
 # === Headers ===
 $Headers = @{
     "Authorization" = "Bearer $PAT"
     "Accept" = "application/json;odata=nometadata"
 }
-
 
 # === Récupération des dossiers ===
 try {
@@ -72,19 +61,28 @@ try {
 if (-not $Folders) { Write-Host "❌ Aucun folder trouvé" -ForegroundColor Yellow; exit }
 Write-Host "📁 $(@($Folders).Count) folders trouvés."
 
-
 # =====================================================================
 # === FONCTIONS ===
 # =====================================================================
 
+# --- Nettoyage renforcé pour Excel ---
+function Clean-ExcelString {
+    param([object]$Value)
+    try {
+        if (-not $Value) { return "" }
+        $text = [string]$Value
+        $text = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes($text))
+        $text = $text -replace '[\x00-\x1F]', ''
+        if ($text.Length -gt 30000) { $text = $text.Substring(0, 30000) + " [TRONQUÉ]" }
+        return $text
+    } catch {
+        return "⚠️ Message illisible"
+    }
+}
+
 # === Récupération des jobs ===
 function Get-UipathJobsForFolder {
-    param (
-        [string]$FolderId,
-        [string]$FolderName,
-        [datetime]$StartDate
-    )
-
+    param ([string]$FolderId, [string]$FolderName, [datetime]$StartDate)
     $FolderHeaders = @{}
     foreach ($key in $Headers.Keys) { $FolderHeaders[$key] = $Headers[$key] }
     $FolderHeaders["X-UIPATH-OrganizationUnitId"] = "$FolderId"
@@ -100,8 +98,7 @@ function Get-UipathJobsForFolder {
             $NextUrl = $Response.'@odata.nextLink'
             if ($NextUrl) { Start-Sleep -Milliseconds 200 }
         } catch {
-            $StatusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "Inconnu" }
-            Write-Host "❌ Erreur (HTTP $StatusCode) pour folder $FolderName." -ForegroundColor Red
+            Write-Host "❌ Erreur pour folder $FolderName : $($_.Exception.Message)" -ForegroundColor Red
             $NextUrl = $null
         }
     }
@@ -111,16 +108,9 @@ function Get-UipathJobsForFolder {
     return $Jobs
 }
 
-
-
 # === Récupération des logs ===
 function Get-UipathLogsForFolder {
-    param (
-        [string]$FolderId,
-        [string]$FolderName,
-        [datetime]$StartDate
-    )
-
+    param ([string]$FolderId, [string]$FolderName, [datetime]$StartDate)
     $FolderHeaders = @{}
     foreach ($key in $Headers.Keys) { $FolderHeaders[$key] = $Headers[$key] }
     $FolderHeaders["X-UIPATH-OrganizationUnitId"] = "$FolderId"
@@ -136,8 +126,7 @@ function Get-UipathLogsForFolder {
             $NextUrl = $Response.'@odata.nextLink'
             if ($NextUrl) { Start-Sleep -Milliseconds 200 }
         } catch {
-            $StatusCode = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "Inconnu" }
-            Write-Host "❌ Erreur (HTTP $StatusCode) pour les logs du dossier $FolderName." -ForegroundColor Red
+            Write-Host "❌ Erreur pour les logs du dossier $FolderName : $($_.Exception.Message)" -ForegroundColor Red
             $NextUrl = $null
         }
     }
@@ -147,31 +136,20 @@ function Get-UipathLogsForFolder {
     return $Logs
 }
 
-
-
 # === Export Jobs avec ROI ===
 function Export-JobsToSheet {
-    param (
-        [array]$AllJobs, 
-        [string]$SheetName,
-        [array]$SummaryData
-    )
-    
+    param ([array]$AllJobs, [string]$SheetName, [array]$SummaryData)
     $SummaryLookup = @{}
     $SummaryData | ForEach-Object { $SummaryLookup[$_.FolderName] = $_ }
-    
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
 
     $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName'
-    for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1, $i+1) = $headers[$i] }
+    for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1,$i+1) = $headers[$i] }
 
     $headersROI = 'SuccessRate','TotalHoursSaved','GainNet','ROI'
     $col = $headers.Count + 1
-    foreach ($h in $headersROI) {
-        $ws.Cells.Item(1, $col) = $h
-        $col++
-    }
+    foreach ($h in $headersROI) { $ws.Cells.Item(1,$col) = $h; $col++ }
 
     $ws.Range("A1:J1").Font.Bold = $true
     $row=2
@@ -194,70 +172,49 @@ function Export-JobsToSheet {
     $ws.Columns.AutoFit() | Out-Null
 }
 
-
 # === Export Summary ===
 function Export-SummaryToSheet {
     param ([array]$SummaryData, [string]$SheetName)
-    
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
-    
     $headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','Waiting','Stopping','SuccessRate','TotalHoursSaved','GainNet','ROI'
     for ($i=0; $i -lt $headersSummary.Count; $i++) { $ws.Cells.Item(1,$i+1) = $headersSummary[$i] }
     $row=2
     foreach ($item in $SummaryData) {
         $col=1
-        foreach ($key in $headersSummary) {
-            $ws.Cells.Item($row,$col) = $item.$key
-            $col++
-        }
+        foreach ($key in $headersSummary) { $ws.Cells.Item($row,$col) = $item.$key; $col++ }
         $row++
     }
     $ws.Columns.AutoFit() | Out-Null
 }
 
-
 # === Export Logs ===
 function Export-LogsToSheet {
-    param (
-        [array]$AllLogs,
-        [string]$SheetName
-    )
-
+    param ([array]$AllLogs, [string]$SheetName)
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
-
     $headers = 'TimeStamp','Level','Message','JobKey','ProcessName','MachineName','FolderName'
-    for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1, $i+1) = $headers[$i] }
-
+    for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1,$i+1) = $headers[$i] }
     $ws.Range("A1:G1").Font.Bold = $true
 
-    $row = 2
+    $row=2
     foreach ($log in $AllLogs) {
         $ws.Cells.Item($row,1) = $log.TimeStamp
         $ws.Cells.Item($row,2) = $log.Level
-        $ws.Cells.Item($row,3) = $log.Message
+        try { $ws.Cells.Item($row,3) = Clean-ExcelString $log.Message } catch { $ws.Cells.Item($row,3) = "⚠️ Message illisible" }
         $ws.Cells.Item($row,4) = $log.JobKey
         $ws.Cells.Item($row,5) = $log.ProcessName
         $ws.Cells.Item($row,6) = $log.MachineName
         $ws.Cells.Item($row,7) = $log.FolderName
         $row++
     }
-
     $ws.Columns.AutoFit() | Out-Null
-
-    # Mise en forme des erreurs (rouge) et warnings (orange)
-    $UsedRange = $ws.UsedRange
-    $UsedRange.AutoFilter()
-    $ws.Range("A1").AutoFilter(2, "Error")
-    $ws.Range("A1").AutoFilter(2, "Warn")
+    $ws.UsedRange.AutoFilter()
 }
-
 
 # === Calcul du résumé ROI ===
 function Export-Summary {
     param ([array]$AllJobs)
-
     $AllStates = @("Successful","Faulted","Stopped","Running","Pending","Terminated","Suspended","Waiting","Stopping")
     $TotalSuccessfulAllFolders = ($AllJobs | Where-Object { $_.State -eq "Successful" -and $_.EndTime -ne $null }).Count
     if ($TotalSuccessfulAllFolders -eq 0) { $TotalSuccessfulAllFolders = 1 }
@@ -268,7 +225,6 @@ function Export-Summary {
         $Folder = $group.Name
         $Jobs = $group.Group
         if ($Jobs.Count -eq 0) { continue }
-
         $StateCounts = @{}
         foreach ($s in $AllStates) { $StateCounts[$s] = ($Jobs | Where-Object { $_.State -eq $s }).Count }
 
@@ -305,18 +261,15 @@ function Export-Summary {
     return $Summary
 }
 
-
 # =====================================================================
 # === PÉRIODES & EXCEL ===
 # =====================================================================
-
 $NowUtc = (Get-Date).ToUniversalTime()
 $Periods = @{
     "J1"  = $NowUtc.AddHours(-25)
     "J7"  = $NowUtc.AddHours(-(7*24 + 1))
     "J30" = $NowUtc.AddHours(-(30*24 + 1))
 }
-
 
 Write-Host "📊 Initialisation Excel..."
 try {
@@ -330,16 +283,13 @@ try {
     exit
 }
 
-
 # =====================================================================
 # === BOUCLE PRINCIPALE ===
 # =====================================================================
 foreach ($period in $Periods.Keys) {
-    Write-Host ""
-    Write-Host "=== Extraction pour $period ===" -ForegroundColor Cyan
+    Write-Host "`n=== Extraction pour $period ===" -ForegroundColor Cyan
     $AllJobs = @()
     $AllLogs = @()
-
     foreach ($folder in $Folders) {
         Start-Sleep -Milliseconds 500
         $AllJobs += Get-UipathJobsForFolder -FolderId $folder.Id -FolderName $folder.DisplayName -StartDate $Periods[$period]
@@ -358,16 +308,13 @@ foreach ($period in $Periods.Keys) {
     Export-LogsToSheet -AllLogs $AllLogs -SheetName "Logs_$period"
 }
 
-
 # =====================================================================
 # === FIN ===
 # =====================================================================
-Write-Host ""
-Write-Host "💾 Sauvegarde du fichier Excel..."
+Write-Host "`n💾 Sauvegarde du fichier Excel..."
 $wb.Save()
 $wb.Close($false)
 $excel.Quit()
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($wb) | Out-Null
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel) | Out-Null
-
 Write-Host "✅ Export terminé avec succès : Datas_J*/Summary_J*/Logs_J*" -ForegroundColor Green
