@@ -1,9 +1,8 @@
 ﻿# =====================================================================
-# API Orchestrator <=> PowerBI - Script Finalisé avec LOGS
-# Version : v10.3 Ultra Stable
-# FINAL : Nettoyage renforcé des messages Excel
-# Auteur : Maxime LAUGIER
-# Update du 22/10/2025
+# API Orchestrator <=> PowerBI - Script Finalisé avec LOGS et Département
+# Version : v11.0 Ultra Stable
+# Auteur : Maxime LAUGIER (modifié)
+# Update du 23/10/2025
 # =====================================================================
 
 # === variables fixes pour tout le script ===
@@ -62,6 +61,55 @@ if (-not $Folders) { Write-Host "❌ Aucun folder trouvé" -ForegroundColor Yell
 Write-Host "📁 $(@($Folders).Count) folders trouvés."
 
 # =====================================================================
+# === CORRESPONDANCE DÉPARTEMENT <=> NOM DU ROBOT ===
+# =====================================================================
+$Departments = @{
+    "RPA001_2_3 - Demandes SST" = "SST"
+    "RPA004 - Changement TJM" = "ADV"
+    "RPA005 - Rouge Extia" = "ADV"
+    "RPA006 - Extract Users Inactifs" = "ADV"
+    "RPA007 - Changement RCR" = "ADP"
+    "RPA008 - Bascule Clients EXTIA" = "RPA"
+    "RPA010 - Compile CDG & Référentiel" = "SST"
+    "RPA011 - Alertes HORA - BNP" = "SST"
+    "RPA012 - Envoie mail clôture" = "COMPTA"
+    "RPA013 - Impression et envoie des factures" = "COMPTA"
+    "RPA016 - R+ Beelix" = "ADV"
+    "RPA017 - Rouge Beelix" = "ADV"
+    "RPA019 - Check Report R+" = "ADV"
+    "RPA020 - Cohérence Manager | R+" = "ADP"
+    "RPA021 - Mise à jour BDU" = "ADV"
+    "RPA023 - Check ADV -> RPA R+" = "ADV"
+    "RPA029 - Changement IA" = "Business"
+    "RPA030 - Check Ancien IA tous les 28" = "Business"
+    "RPA031 - Retour Manager _ IA" = "Business"
+    "RPA035 - Changement RH" = "ADP"
+    "RPA036 - Purge IA Database HORA" = "Business"
+    "RPA037 - Retour Manager _ RH" = "ADP"
+    "RPA038 - Check Ancien RH tous les 28" = "ADP"
+    "RPA039 - DL Factures HORA" = "Trésorie"
+    "RPA040 - Changement_IA_j1" = "Business"
+    "RPA041 - R+ Roumanie" = "ADP"
+    "RPA042 - Check Date Rouge Daily" = "ADV"
+    "RPA043 - Portage" = "ADV"
+    "RPA044 - Changement_RH_j1" = "ADV"
+    "RPA045 - Orange Extia" = "ADV"
+    "RPA047 - R+ Extia v2" = "ADV"
+    "RPA048 - ADP ADV SST" = "SST"
+    "RPA049 - Extract Utilisateurs" = "SST"
+    "RPA050 - Luncher R+ EXTIA v2" = "ADV"
+    "RPA051 - Astreintes v2" = "ADP"
+    "RPA052 - Reporting JB" = "Business"
+    "RPA053 - Purge Reporting JB" = "Business"
+    "RPA054 - Vert Extia" = "ADV"
+    "RPA055 - Attestions SSI" = "SST"
+    "RPA056 - Export Sous-Entité BaseBDU" = "SST"
+    "RPA057 - Réponse Manager ADV SST" = "SST"
+    "RPA058 - Verif GDrive" = "RPA"
+    "RPA059 - Creation Compte Client" = "ADV"
+}
+
+# =====================================================================
 # === FONCTIONS ===
 # =====================================================================
 
@@ -83,7 +131,7 @@ function Clean-ExcelString {
 # === Récupération des jobs ===
 function Get-UipathJobsForFolder {
     param ([string]$FolderId, [string]$FolderName, [datetime]$StartDate)
-    $FolderHeaders = @{}
+    $FolderHeaders = @{ }
     foreach ($key in $Headers.Keys) { $FolderHeaders[$key] = $Headers[$key] }
     $FolderHeaders["X-UIPATH-OrganizationUnitId"] = "$FolderId"
 
@@ -103,7 +151,16 @@ function Get-UipathJobsForFolder {
         }
     }
 
-    foreach ($job in $Jobs) { $job | Add-Member -NotePropertyName FolderName -NotePropertyValue $FolderName -Force }
+    foreach ($job in $Jobs) {
+        $job | Add-Member -NotePropertyName FolderName -NotePropertyValue $FolderName -Force
+        # Attribution du département
+        $dept = "Autre"
+        foreach ($key in $Departments.Keys) {
+            if ($FolderName -like "*$key*") { $dept = $Departments[$key]; break }
+        }
+        $job | Add-Member -NotePropertyName Departement -NotePropertyValue $dept -Force
+    }
+
     Write-Host "📦 [$FolderName] Total jobs récupérés : $($Jobs.Count)"
     return $Jobs
 }
@@ -111,7 +168,7 @@ function Get-UipathJobsForFolder {
 # === Récupération des logs ===
 function Get-UipathLogsForFolder {
     param ([string]$FolderId, [string]$FolderName, [datetime]$StartDate)
-    $FolderHeaders = @{}
+    $FolderHeaders = @{ }
     foreach ($key in $Headers.Keys) { $FolderHeaders[$key] = $Headers[$key] }
     $FolderHeaders["X-UIPATH-OrganizationUnitId"] = "$FolderId"
 
@@ -136,22 +193,22 @@ function Get-UipathLogsForFolder {
     return $Logs
 }
 
-# === Export Jobs avec ROI ===
+# === Export Jobs avec ROI et Département ===
 function Export-JobsToSheet {
     param ([array]$AllJobs, [string]$SheetName, [array]$SummaryData)
-    $SummaryLookup = @{}
+    $SummaryLookup = @{ }
     $SummaryData | ForEach-Object { $SummaryLookup[$_.FolderName] = $_ }
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
 
-    $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName'
+    $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName','Departement'
     for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1,$i+1) = $headers[$i] }
 
     $headersROI = 'SuccessRate','TotalHoursSaved','GainNet','ROI'
     $col = $headers.Count + 1
     foreach ($h in $headersROI) { $ws.Cells.Item(1,$col) = $h; $col++ }
 
-    $ws.Range("A1:J1").Font.Bold = $true
+    $ws.Range("A1:K1").Font.Bold = $true
     $row=2
     foreach ($job in $AllJobs) {
         $ws.Cells.Item($row,1) = $job.Id
@@ -160,24 +217,25 @@ function Export-JobsToSheet {
         $ws.Cells.Item($row,4) = $job.StartTime
         $ws.Cells.Item($row,5) = $job.EndTime
         $ws.Cells.Item($row,6) = $job.FolderName
+        $ws.Cells.Item($row,7) = $job.Departement
         $summaryItem = $SummaryLookup[$job.FolderName]
         if ($summaryItem) {
-            $ws.Cells.Item($row,7) = $summaryItem.SuccessRate
-            $ws.Cells.Item($row,8) = $summaryItem.TotalHoursSaved
-            $ws.Cells.Item($row,9) = $summaryItem.GainNet
-            $ws.Cells.Item($row,10) = $summaryItem.ROI
+            $ws.Cells.Item($row,8) = $summaryItem.SuccessRate
+            $ws.Cells.Item($row,9) = $summaryItem.TotalHoursSaved
+            $ws.Cells.Item($row,10) = $summaryItem.GainNet
+            $ws.Cells.Item($row,11) = $summaryItem.ROI
         }
         $row++
     }
     $ws.Columns.AutoFit() | Out-Null
 }
 
-# === Export Summary ===
+# === Export Summary avec Département ===
 function Export-SummaryToSheet {
     param ([array]$SummaryData, [string]$SheetName)
     try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
     $ws.Cells.Clear()
-    $headersSummary = 'FolderName','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','Waiting','Stopping','SuccessRate','TotalHoursSaved','GainNet','ROI'
+    $headersSummary = 'FolderName','Departement','TotalJobs','Successful','Faulted','Stopped','Running','Pending','Terminated','Suspended','Waiting','Stopping','SuccessRate','TotalHoursSaved','GainNet','ROI'
     for ($i=0; $i -lt $headersSummary.Count; $i++) { $ws.Cells.Item(1,$i+1) = $headersSummary[$i] }
     $row=2
     foreach ($item in $SummaryData) {
@@ -212,7 +270,7 @@ function Export-LogsToSheet {
     $ws.UsedRange.AutoFilter()
 }
 
-# === Calcul du résumé ROI ===
+# === Calcul du résumé ROI avec Département ===
 function Export-Summary {
     param ([array]$AllJobs)
     $AllStates = @("Successful","Faulted","Stopped","Running","Pending","Terminated","Suspended","Waiting","Stopping")
@@ -225,7 +283,7 @@ function Export-Summary {
         $Folder = $group.Name
         $Jobs = $group.Group
         if ($Jobs.Count -eq 0) { continue }
-        $StateCounts = @{}
+        $StateCounts = @{ }
         foreach ($s in $AllStates) { $StateCounts[$s] = ($Jobs | Where-Object { $_.State -eq $s }).Count }
 
         $Success = $StateCounts["Successful"]
@@ -240,8 +298,12 @@ function Export-Summary {
         $GainNet = [math]::Round($HumanEquivalentCost - $ProportionalCost,2)
         $ROI = if ($ProportionalCost -ne 0) { [math]::Round($GainNet/$ProportionalCost,2) } else { 0 }
 
+        # Département
+        $dept = $Jobs[0].Departement
+
         $Summary += [PSCustomObject]@{
             FolderName = $Folder
+            Departement = $dept
             TotalJobs = $Jobs.Count
             Successful = $StateCounts["Successful"]
             Faulted = $StateCounts["Faulted"]
