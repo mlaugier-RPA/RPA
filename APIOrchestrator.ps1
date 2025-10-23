@@ -13,7 +13,7 @@ $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # === Paramètres ROI pour le calcul du gain ===
 $CostPerHour = 30          # € / heure d’un humain
-$MinutesSavedPerJob = 10   # minutes économisées par job réussi
+$MinutesSavedPerJob = 20   # minutes économisées par job réussi
 $MonthlyRPACost = 5900     # € coût global RPA mensuel
 
 # === Suppression du fichier Excel existant au début ===
