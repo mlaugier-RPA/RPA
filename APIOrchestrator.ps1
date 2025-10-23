@@ -13,7 +13,7 @@ $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # === Paramètres ROI pour le calcul du gain ===
 $CostPerHour = 30          # € / heure d’un humain
-$MinutesSavedPerJob = 20   # minutes économisées par job réussi
+$MinutesSavedPerJob = 10   # minutes économisées par job réussi
 $MonthlyRPACost = 5900     # € coût global RPA mensuel
 
 # === Suppression du fichier Excel existant au début ===
@@ -196,20 +196,34 @@ function Get-UipathLogsForFolder {
 # === Export Jobs avec ROI et Département ===
 function Export-JobsToSheet {
     param ([array]$AllJobs, [string]$SheetName, [array]$SummaryData)
+
+    # Dictionnaire pour lookup des données de résumé
     $SummaryLookup = @{ }
     $SummaryData | ForEach-Object { $SummaryLookup[$_.FolderName] = $_ }
-    try { $ws = $wb.Worksheets.Item($SheetName) } catch { $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName }
+
+    try { 
+        $ws = $wb.Worksheets.Item($SheetName) 
+    } catch { 
+        $ws = $wb.Worksheets.Add(); $ws.Name = $SheetName 
+    }
+
     $ws.Cells.Clear()
 
     $headers = 'Id','ReleaseName','State','StartTime','EndTime','FolderName','Departement'
-    for ($i=0; $i -lt $headers.Count; $i++) { $ws.Cells.Item(1,$i+1) = $headers[$i] }
+    for ($i=0; $i -lt $headers.Count; $i++) { 
+        $ws.Cells.Item(1,$i+1) = $headers[$i] 
+    }
 
     $headersROI = 'SuccessRate','TotalHoursSaved','GainNet','ROI'
     $col = $headers.Count + 1
-    foreach ($h in $headersROI) { $ws.Cells.Item(1,$col) = $h; $col++ }
+    foreach ($h in $headersROI) { 
+        $ws.Cells.Item(1,$col) = $h
+        $col++ 
+    }
 
     $ws.Range("A1:K1").Font.Bold = $true
-    $row=2
+    $row = 2
+
     foreach ($job in $AllJobs) {
         $ws.Cells.Item($row,1) = $job.Id
         $ws.Cells.Item($row,2) = $job.ReleaseName
@@ -218,15 +232,28 @@ function Export-JobsToSheet {
         $ws.Cells.Item($row,5) = $job.EndTime
         $ws.Cells.Item($row,6) = $job.FolderName
         $ws.Cells.Item($row,7) = $job.Departement
+
+        # Cherche les données de résumé pour ce dossier
         $summaryItem = $SummaryLookup[$job.FolderName]
+
         if ($summaryItem) {
-            $ws.Cells.Item($row,8) = $summaryItem.SuccessRate
-            $ws.Cells.Item($row,9) = $summaryItem.TotalHoursSaved
-            $ws.Cells.Item($row,10) = $summaryItem.GainNet
-            $ws.Cells.Item($row,11) = $summaryItem.ROI
+            # --- Application de la règle ---
+            if ($job.State -in @("Faulted","Stopped")) {
+                $ws.Cells.Item($row,8)  = $summaryItem.SuccessRate
+                $ws.Cells.Item($row,9)  = 0                       # ✅ Forcé à 0
+                $ws.Cells.Item($row,10) = $summaryItem.GainNet
+                $ws.Cells.Item($row,11) = $summaryItem.ROI
+            } else {
+                $ws.Cells.Item($row,8)  = $summaryItem.SuccessRate
+                $ws.Cells.Item($row,9)  = $summaryItem.TotalHoursSaved
+                $ws.Cells.Item($row,10) = $summaryItem.GainNet
+                $ws.Cells.Item($row,11) = $summaryItem.ROI
+            }
         }
+
         $row++
     }
+
     $ws.Columns.AutoFit() | Out-Null
 }
 
@@ -271,6 +298,7 @@ function Export-LogsToSheet {
 }
 
 # === Calcul du résumé ROI avec Département ===
+# === Calcul du résumé ROI avec Département ===
 function Export-Summary {
     param ([array]$AllJobs)
     $AllStates = @("Successful","Faulted","Stopped","Running","Pending","Terminated","Suspended","Waiting","Stopping")
@@ -283,6 +311,7 @@ function Export-Summary {
         $Folder = $group.Name
         $Jobs = $group.Group
         if ($Jobs.Count -eq 0) { continue }
+
         $StateCounts = @{ }
         foreach ($s in $AllStates) { $StateCounts[$s] = ($Jobs | Where-Object { $_.State -eq $s }).Count }
 
@@ -290,10 +319,18 @@ function Export-Summary {
         $Completed = ($Jobs | Where-Object { $_.State -in @("Successful","Faulted","Stopped","Terminated") }).Count
         $SuccessRate = if ($Completed -gt 0) { [math]::Round($Success/$Completed,2) } else { 0 }
 
+        # --- Calcul ROI ---
         $SuccessfulFinishedJobs = $Jobs | Where-Object { $_.State -eq "Successful" -and $_.EndTime -ne $null }
         $SuccessCountForROI = $SuccessfulFinishedJobs.Count
         $ProportionalCost = $MonthlyRPACost * ($SuccessCountForROI / $TotalSuccessfulAllFolders)
-        $TotalHoursSaved = [math]::Round(($SuccessCountForROI * $MinutesSavedPerJob)/60,2)
+
+        # ✅ Si le job est Faulted ou Stopped, aucun temps gagné
+        if ($SuccessCountForROI -eq 0) {
+            $TotalHoursSaved = 0
+        } else {
+            $TotalHoursSaved = [math]::Round(($SuccessCountForROI * $MinutesSavedPerJob)/60,2)
+        }
+
         $HumanEquivalentCost = $TotalHoursSaved * $CostPerHour
         $GainNet = [math]::Round($HumanEquivalentCost - $ProportionalCost,2)
         $ROI = if ($ProportionalCost -ne 0) { [math]::Round($GainNet/$ProportionalCost,2) } else { 0 }
