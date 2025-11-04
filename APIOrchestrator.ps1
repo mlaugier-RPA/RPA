@@ -9,6 +9,7 @@
 $Org = "extiavqvkelj"
 $Tenant = "DefaultTenant"
 $XlsPath = "H:\Mon Drive\Reporting PowerBI\UiPathJobs.xlsx"
+$XlsDept_et_Teamps = "H:\Mon Drive\Reporting PowerBI\Departement_Tps_Excecutions.xlsx"
 $BaseUrl = "https://cloud.uipath.com/$Org/$Tenant/orchestrator_/odata"
 
 # === Paramètres ROI pour le calcul du gain ===
